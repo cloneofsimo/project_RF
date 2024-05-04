@@ -1,0 +1,9 @@
+*.mds
+*stats.json
+*.parquet
+*.tar
+*index.json
+hub
+*.parquet
+capfusion*
+*.pt

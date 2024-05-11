@@ -50,14 +50,15 @@ def crop_to_center(image, new_size=768):
 
 def prepare_image(pil_image, w=512, h=512):
     thisw, thish = pil_image.size
-    assert (thisw == 256 or thish == 256), f"Image size is {thisw}x{thish}"
+    assert thisw == 256 or thish == 256, f"Image size is {thisw}x{thish}"
     pil_image = crop_to_center(pil_image, 256)
-    #pil_image = pil_image.resize((w, h), resample=Image.BICUBIC, reducing_gap=1)
+    # pil_image = pil_image.resize((w, h), resample=Image.BICUBIC, reducing_gap=1)
     arr = np.array(pil_image.convert("RGB"))
     arr = arr.astype(np.float32) / 127.5 - 1
     arr = np.transpose(arr, [2, 0, 1])
     image = torch.from_numpy(arr)
     return image
+
 
 def preprocess(x):
     image, caption = x
@@ -72,6 +73,7 @@ from tqdm import tqdm
 from torch.utils.data import DataLoader
 import webdataset as wds
 
+
 @torch.no_grad()
 def convert_to_mds(
     dataset_path, out_root, device, batch_size=8, num_workers=4, is_test=False
@@ -79,15 +81,17 @@ def convert_to_mds(
     logging.info(f"Processing on {device}")
 
     # Load the VAE model
-    vae_model = AutoencoderKL.from_pretrained("madebyollin/sdxl-vae-fp16-fix", torch_dtype=torch.float16)
+    vae_model = AutoencoderKL.from_pretrained(
+        "madebyollin/sdxl-vae-fp16-fix", torch_dtype=torch.float16
+    )
     vae_model = vae_model.to(device).eval()
     vae_model.to(memory_format=torch.channels_last)
-    #vae_model.encode = torch.compile(vae_model.encode, mode="reduce-overhead", fullgraph=False)
+    # vae_model.encode = torch.compile(vae_model.encode, mode="reduce-overhead", fullgraph=False)
     dataset = wds.WebDataset(dataset_path).decode("pil").to_tuple("jpg;png", "json")
 
     # Create the dataset and dataloader
     dataset = dataset.map(preprocess)
-    
+
     # if dataset.__len__() < 1:
     #     logging.info("No images to process.")
     #     return
@@ -112,7 +116,7 @@ def convert_to_mds(
             processed_images, cpations = batch["image"], batch["caption"]
             processed_images = processed_images.to(device).half()
             vae_outputs = vae_model.encode(processed_images).latent_dist.mean
-            
+
             vae_outputs = (vae_outputs.clip(-14, 14) / 28.0 + 0.5) * 255.0
             vae_outputs = vae_outputs.to(torch.uint8)
 
@@ -135,11 +139,18 @@ def convert_to_mds(
 
 
 def main(
-    datasetinfo, out_root, batch_size=64, num_workers=8, is_test=False, device_name="cuda"
+    datasetinfo,
+    out_root,
+    batch_size=64,
+    num_workers=8,
+    is_test=False,
+    device_name="cuda",
 ):
     device = torch.device(device_name if torch.cuda.is_available() else "cpu")
     print(f"Processing on {device}")
-    convert_to_mds(datasetinfo, out_root, device, batch_size, num_workers, is_test=is_test)
+    convert_to_mds(
+        datasetinfo, out_root, device, batch_size, num_workers, is_test=is_test
+    )
     logging.info("Finished processing images.")
 
 
@@ -163,8 +174,8 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     out_root = f"/home/host/simo/capfusion_vae_mds/{str(args.file_index).zfill(5)}"
-    dataset_path=f"/home/host/simo/capfusion_256/{str(args.file_index).zfill(5)}.tar"
-    #out_root = "./here"
+    dataset_path = f"/home/host/simo/capfusion_256/{str(args.file_index).zfill(5)}.tar"
+    # out_root = "./here"
     main(
         dataset_path,
         out_root,

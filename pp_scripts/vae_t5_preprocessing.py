@@ -72,20 +72,28 @@ def preprocess(x):
 from tqdm import tqdm
 from torch.utils.data import DataLoader
 import webdataset as wds
+from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
+
+
 
 
 @torch.no_grad()
 def convert_to_mds(
-    dataset_path, out_root, device, batch_size=8, num_workers=4, is_test=False
+    dataset_path, out_root, device, is_test=False, selective_json=None
 ):
     logging.info(f"Processing on {device}")
-
     # Load the VAE model
     vae_model = AutoencoderKL.from_pretrained(
-        "madebyollin/sdxl-vae-fp16-fix", torch_dtype=torch.float16
+    "madebyollin/sdxl-vae-fp16-fix", torch_dtype=torch.float16
     )
     vae_model = vae_model.to(device).eval()
     vae_model.to(memory_format=torch.channels_last)
+    
+    t5tokenizer = AutoTokenizer.from_pretrained("EleutherAI/pile-t5-xl", use_fast=False)
+    t5tokenizer.pad_token = t5tokenizer.bos_token
+    t5model = AutoModelForSeq2SeqLM.from_pretrained("EleutherAI/pile-t5-xl")
+    t5model = t5model.to(device).eval()
+
     # vae_model.encode = torch.compile(vae_model.encode, mode="reduce-overhead", fullgraph=False)
     dataset = wds.WebDataset(dataset_path).decode("pil").to_tuple("jpg;png", "json")
 
@@ -98,8 +106,15 @@ def convert_to_mds(
 
     dataloader = DataLoader(dataset, batch_size=32, num_workers=4)
 
+    if selective_json is not None:
+        with open(selective_json) as f:
+            selective_json = json.load(f)
+
+
+
+
     sub_data_root = os.path.join(out_root, "data")
-    columns = {"vae_output": "uint8", "caption": "str"}
+    columns = {"vae_output": "uint8", "caption": "str", 't5emb': 'np16'}
 
     if os.path.exists(sub_data_root):
         # Remove all files in the directory
@@ -110,21 +125,41 @@ def convert_to_mds(
     with MDSWriter(out=sub_data_root, columns=columns) as out:
         inference_latencies = []
 
-        for batch in tqdm(dataloader):
+        for idx, batch in tqdm(enumerate(dataloader)):
+            batchidx = range(idx * 32, (idx + 1) * 32)
+            
+            if selective_json is not None:
+                batch_sel_idx = [x - idx * 32 for x in batchidx if (x in selective_json)]
+                batch_sel_idx = torch.tensor(batch_sel_idx)
+
             start_time = time.time()
 
-            processed_images, cpations = batch["image"], batch["caption"]
+            processed_images, captions = batch["image"], batch["caption"]
+            # select 
+            processed_images = processed_images[batch_sel_idx]
+            captions = [captions[i] for i in batch_sel_idx]
+            
+            # VAE
             processed_images = processed_images.to(device).half()
-            vae_outputs = vae_model.encode(processed_images).latent_dist.mean
+            vae_outputs = vae_model.encode(processed_images).latent_dist.sample()
 
             vae_outputs = (vae_outputs.clip(-14, 14) / 28.0 + 0.5) * 255.0
             vae_outputs = vae_outputs.to(torch.uint8)
 
+            # T5
+            t5_inputs = t5tokenizer(captions, return_tensors="pt", padding=True, truncation=True, max_length=128)
+            t5_inputs = {k: v.to(device) for k, v in t5_inputs.items()}
+            t5_outputs = t5model.encoder(**t5_inputs)[0] # B, T, D
+            # mask that by 0 for padding tokens
+            mask = t5_inputs["attention_mask"].unsqueeze(-1).expand(t5_outputs.shape)
+            t5_outputs = t5_outputs * mask
+
             # Iterate through the batch
-            for i in range(len(cpations)):
+            for i in range(len(captions)):
                 sample = {
                     "vae_output": vae_outputs[i].cpu().numpy().astype(np.uint8),
-                    "caption": str(cpations[i]),
+                    "caption": str(captions[i]),
+                    't5emb': t5_outputs[i].cpu().numpy().astype(np.float16)
                 }
                 out.write(sample)
 
@@ -141,15 +176,14 @@ def convert_to_mds(
 def main(
     datasetinfo,
     out_root,
-    batch_size=64,
-    num_workers=8,
     is_test=False,
     device_name="cuda",
+    selective_json=None
 ):
     device = torch.device(device_name if torch.cuda.is_available() else "cpu")
     print(f"Processing on {device}")
     convert_to_mds(
-        datasetinfo, out_root, device, batch_size, num_workers, is_test=is_test
+        datasetinfo, out_root, device, is_test=is_test, selective_json = selective_json
     )
     logging.info("Finished processing images.")
 
@@ -165,7 +199,7 @@ if __name__ == "__main__":
         help="Device to use for processing (cuda or cpu).",
     )
     parser.add_argument(
-        "--file_index", type=int, default=0, help="File index to process."
+        "--file_index", type=int, default=1, help="File index to process."
     )
     parser.add_argument(
         "--is_test", action="store_true", help="Run in test mode with reduced dataset."
@@ -173,12 +207,14 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    out_root = f"/home/host/simo/capfusion_vae_mds/{str(args.file_index).zfill(5)}"
+    out_root = f"/home/host/simo/capfusion_mds/{str(args.file_index).zfill(5)}"
     dataset_path = f"/home/host/simo/capfusion_256/{str(args.file_index).zfill(5)}.tar"
-    # out_root = "./here"
+    selective_json = f"/home/host/simo/sscd_deduped_pertar_items/{str(args.file_index).zfill(5)}.json"
+    
     main(
         dataset_path,
         out_root,
         is_test=args.is_test,
         device_name=args.device,
+        selective_json=selective_json
     )

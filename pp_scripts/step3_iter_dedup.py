@@ -7,6 +7,26 @@ import unittest
 
 import torch
 
+
+def chunked_cdist(vecs, chunk_size, device):
+    n = vecs.size(0)
+    dist = torch.zeros((n, n), dtype=vecs.dtype, device='cpu')  # Initialize on CPU
+    
+    # Iterate over chunks
+    for i in range(0, n, chunk_size):
+        for j in range(0, n, chunk_size):
+            # Move the chunks to the GPU
+            vecs_chunk_1 = vecs[i:i+chunk_size].to(device)
+            vecs_chunk_2 = vecs[j:j+chunk_size].to(device)
+            
+            # Compute pairwise distances between the chunks
+            dist_chunk = torch.cdist(vecs_chunk_1, vecs_chunk_2, p=2)
+            
+            # Move the result back to CPU and store it in the appropriate slice
+            dist[i:i+chunk_size, j:j+chunk_size] = dist_chunk.cpu()
+    
+    return dist
+
 def dedup_cluster(cluster_vec_emb_file, cluster_item_file, i, sim_thres = 0.4):
 
     vecs = np.load(cluster_vec_emb_file)
@@ -22,7 +42,7 @@ def dedup_cluster(cluster_vec_emb_file, cluster_item_file, i, sim_thres = 0.4):
     online_mostduped_set = []
     mostduped_set_len = -1
 
-    if len(vecs) < 15000: # its gona need 1.6G of GPU memory, im good with that.
+    if len(vecs) < 30000: # its gona need 1.6G of GPU memory, im good with that.
         # make torch cuda tensor of all the pairwise distance between the vectors, in l2
         # then use torch to find the indices of the pairs that are less than sim_thres
         # then add the indices to the dups set
@@ -31,7 +51,8 @@ def dedup_cluster(cluster_vec_emb_file, cluster_item_file, i, sim_thres = 0.4):
         # then return the items
         
         vecs = torch.tensor(vecs).to(f'cuda:{i%8}').float()
-        dist = torch.cdist(vecs, vecs, p=2)
+        #dist = torch.cdist(vecs, vecs, p=2)
+        dist = chunked_cdist(vecs, 2000, f'cuda:{i%8}')
         dups = set()
         for i, item in enumerate(items):
             if item in dups:
@@ -109,13 +130,19 @@ def run(i):
     print(f"Doing {i} cluster")
     cluster_vec_emb_file = f'../sscd_cluster_info/cemb_{i}.npy'
     cluster_item_file = f'../sscd_cluster_info/cidx_{i}.npy'
+    len_c = len(np.load(cluster_item_file))
+    # check if it is already done
+    if os.path.exists(f'../sscd_dedup_cluster_info/mostduped_{i}.json'):
+        print(f"Cluster {i} already deduped")
+        return
+
     deduped_items, mostdeduped = dedup_cluster(cluster_vec_emb_file, cluster_item_file, i)
     # mostdeduped to just json
     with open(f'../sscd_dedup_cluster_info/mostduped_{i}.json', 'w') as f:
         mostdeduped = [int(x) for x in mostdeduped]
         json.dump(list(mostdeduped), f)
     np.save(f'../sscd_dedup_cluster_info/cidx_{i}.npy', deduped_items)
-    len_c = len(np.load(cluster_item_file))
+    
     print(f"Reduced the cluster {i} from {len_c} to {len(deduped_items)}, {100 * (len_c - len(deduped_items)) / len_c}%")
 
 
@@ -125,11 +152,45 @@ if __name__ == "__main__":
     # import json
     # # launch multiple processes, use pbar to track process.
     count_cluster = 16000
+    count_tar = 11357
     import multiprocessing
     from tqdm import tqdm
+    import numpy as np
+    import os
+    import json
+    from collections import deque
     with multiprocessing.Pool(8) as p:
-        list(tqdm(p.imap(run, range(13000, count_cluster)), total=count_cluster))
+        list(tqdm(p.imap(run, range(count_cluster)), total=count_cluster))
     import time
     t0 = time.time()
-    run(0)
+    
     print(f"Time taken: {time.time() - t0} seconds")
+
+    # now gather all the embedding info, and sort them
+    all_deduped_items = []
+    for i in range(count_cluster):
+        deduped_items = np.load(f'../sscd_dedup_cluster_info/cidx_{i}.npy')
+        all_deduped_items.extend(deduped_items.tolist())
+
+    # emb size per tar
+    emb_sizes = []
+    for tidx in range(count_tar):
+        emb_size = len(np.load(f'../sscdemb/{tidx:05d}.npy'))
+        print(f"Tar {tidx} emb size: {emb_size}")
+        emb_sizes.append(emb_size)
+
+    # Sort the all_deduped_items, and save them per offset
+    os.makedirs('../sscd_deduped_pertar_items', exist_ok=True)
+    all_deduped_items.sort()
+    all_deduped_items = deque(all_deduped_items)  # Use deque for efficient popping from the front
+
+    offset = 0
+    for tidx, emb_size in enumerate(emb_sizes):
+        offset += emb_size
+
+        to_save_items = []
+        while len(all_deduped_items) > 0 and all_deduped_items[0] < offset:
+            to_save_items.append(all_deduped_items.popleft() - offset + emb_size)  # Use popleft for efficient removal
+
+        with open(f'../sscd_deduped_pertar_items/{tidx:05d}.json', 'w') as f:
+            json.dump(to_save_items, f)

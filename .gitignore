@@ -11,3 +11,5 @@ ckpts
 sscdemb
 sscd_cluster_info
 sscd_dedup_cluster_info
+sscd*
+temp

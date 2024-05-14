@@ -43,7 +43,7 @@ _encodings["uint8"] = uint8
 _encodings["np16"] = np16
 
 
-remote_train_dir = "./vae_mds/00000/data"
+remote_train_dir = ".//data"
 local_train_dir = "./local_train_dir"
 if os.path.exists(local_train_dir):
     shutil.rmtree(local_train_dir)
@@ -71,7 +71,6 @@ from diffusers.models import AutoencoderKL
 from diffusers import StableDiffusionPipeline
 from diffusers.image_processor import VaeImageProcessor
 
-model = "stabilityai/your-stable-diffusion-model"
 vae = AutoencoderKL.from_pretrained("stabilityai/sdxl-vae").to("cuda:0")
 
 

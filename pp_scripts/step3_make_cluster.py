@@ -1,6 +1,7 @@
 import numpy as np
 import faiss
 import os
+import time
 
 # Function to load numpy arrays and concatenate them
 def load_and_concat_arrays(folder_path, num_files):
@@ -10,20 +11,24 @@ def load_and_concat_arrays(folder_path, num_files):
         array = np.load(file_path)
         arrays.append(array)
     concatenated_array = np.vstack(arrays)
+    # normalize that
+    concatenated_array = concatenated_array / np.linalg.norm(concatenated_array, axis=1)[:, None]
     return concatenated_array
+
+t0 = time.time()
 
 # Load and concatenate arrays
 folder_path = '../sscdemb'
-num_files = 359
+num_files = 11357
 data = load_and_concat_arrays(folder_path, num_files)
-print(f"Shape of concatenated data: {data.shape}")
+print(f"Shape of concatenated data: {data.shape}, time taken: {time.time() - t0:.2f}s")
 
 # Number of clusters
-num_clusters = 400
+num_clusters = 16000
 
 # Initialize Faiss k-means
 d = data.shape[1]
-kmeans = faiss.Kmeans(d, num_clusters, niter=40, verbose=True)
+kmeans = faiss.Kmeans(d, num_clusters, niter=10, verbose=True, max_points_per_centroid = 50)
 
 # Perform k-means clustering
 kmeans.train(data)

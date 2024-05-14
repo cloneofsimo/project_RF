@@ -1,4 +1,3 @@
-
 wget https://dl.fbaipublicfiles.com/sscd-copy-detection/sscd_disc_mixup.torchscript.pt
 
 NUM_GPUS=8

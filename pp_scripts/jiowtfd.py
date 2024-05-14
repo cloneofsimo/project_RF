@@ -13,7 +13,7 @@ class DatasetLocator:
 
         cumulative_size_list = []
         cursize = 0
-        for i in range(1000):
+        for i in range(11357):
             json_path = self.json_pattern.format(i)
             with open(json_path, 'r') as f:
                 data = json.load(f)
@@ -47,7 +47,7 @@ locator = DatasetLocator(
 )
 
 
-candidates = set([1332656, 1341506, 104645, 1251693, 1321899, 476365, 1323967])
+candidates = set([2147786, 10273119, 5656121, 28322778, 10094460, 25760847])
 
 for idx in candidates:
     image, caption = locator[idx]

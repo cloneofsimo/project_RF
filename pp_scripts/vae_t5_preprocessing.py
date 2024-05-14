@@ -89,9 +89,9 @@ def convert_to_mds(
     vae_model = vae_model.to(device).eval()
     vae_model.to(memory_format=torch.channels_last)
     
-    t5tokenizer = AutoTokenizer.from_pretrained("EleutherAI/pile-t5-xl", use_fast=False)
+    t5tokenizer = AutoTokenizer.from_pretrained("EleutherAI/pile-t5-large", use_fast=False)
     t5tokenizer.pad_token = t5tokenizer.bos_token
-    t5model = AutoModelForSeq2SeqLM.from_pretrained("EleutherAI/pile-t5-xl")
+    t5model = AutoModelForSeq2SeqLM.from_pretrained("EleutherAI/pile-t5-large")
     t5model = t5model.to(device).eval()
 
     # vae_model.encode = torch.compile(vae_model.encode, mode="reduce-overhead", fullgraph=False)
@@ -131,6 +131,8 @@ def convert_to_mds(
             if selective_json is not None:
                 batch_sel_idx = [x - idx * 32 for x in batchidx if (x in selective_json)]
                 batch_sel_idx = torch.tensor(batch_sel_idx)
+                if len(batch_sel_idx) == 0:
+                    continue
 
             start_time = time.time()
 

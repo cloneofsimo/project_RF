@@ -62,7 +62,7 @@ def prepare_image(pil_image, w=512, h=512):
 
 def preprocess(x):
     image, caption = x
-    print(image, caption)
+    #print(image, caption)
     image = prepare_image(image, 256, 256)
     # # Assuming the caption is in a JSON field
     caption = caption["caption"]
@@ -79,7 +79,7 @@ from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
 
 @torch.no_grad()
 def convert_to_mds(
-    dataset_path, out_root, device, is_test=False, selective_json=None
+    dataset_paths, out_roots, device, is_test=False, selective_jsons=None
 ):
     logging.info(f"Processing on {device}")
     # Load the VAE model
@@ -94,98 +94,105 @@ def convert_to_mds(
     t5model = AutoModelForSeq2SeqLM.from_pretrained("EleutherAI/pile-t5-large")
     t5model = t5model.to(device).eval()
 
-    # vae_model.encode = torch.compile(vae_model.encode, mode="reduce-overhead", fullgraph=False)
-    dataset = wds.WebDataset(dataset_path).decode("pil").to_tuple("jpg;png", "json")
+    for dataset_path, out_root, selective_json in zip(dataset_paths, out_roots, selective_jsons):
+        if not os.path.exists(dataset_path):
+            logging.info(f"Dataset not found: {dataset_path}")
+            return
+        # vae_model.encode = torch.compile(vae_model.encode, mode="reduce-overhead", fullgraph=False)
+        dataset = wds.WebDataset(dataset_path).decode("pil").to_tuple("jpg;png", "json")
 
-    # Create the dataset and dataloader
-    dataset = dataset.map(preprocess)
+        # Create the dataset and dataloader
+        dataset = dataset.map(preprocess)
 
-    # if dataset.__len__() < 1:
-    #     logging.info("No images to process.")
-    #     return
+        # if dataset.__len__() < 1:
+        #     logging.info("No images to process.")
+        #     return
 
-    dataloader = DataLoader(dataset, batch_size=32, num_workers=4)
+        dataloader = DataLoader(dataset, batch_size=32, num_workers=4)
 
-    if selective_json is not None:
-        with open(selective_json) as f:
-            selective_json = json.load(f)
-
-
+        if selective_json is not None:
+            with open(selective_json) as f:
+                selective_json = json.load(f)
 
 
-    sub_data_root = os.path.join(out_root, "data")
-    columns = {"vae_output": "uint8", "caption": "str", 't5emb': 'np16'}
 
-    if os.path.exists(sub_data_root):
-        # Remove all files in the directory
-        for file in os.listdir(sub_data_root):
-            os.remove(os.path.join(sub_data_root, file))
-    os.makedirs(sub_data_root, exist_ok=True)
+        t0 = time.time()
+        sub_data_root = os.path.join(out_root, "data")
+        columns = {"vae_output": "uint8", "caption": "str", 't5emb': 'np16'}
 
-    with MDSWriter(out=sub_data_root, columns=columns) as out:
-        inference_latencies = []
+        if os.path.exists(sub_data_root):
+            # Remove all files in the directory
+            for file in os.listdir(sub_data_root):
+                os.remove(os.path.join(sub_data_root, file))
+        os.makedirs(sub_data_root, exist_ok=True)
 
-        for idx, batch in tqdm(enumerate(dataloader)):
-            batchidx = range(idx * 32, (idx + 1) * 32)
-            
-            if selective_json is not None:
-                batch_sel_idx = [x - idx * 32 for x in batchidx if (x in selective_json)]
-                batch_sel_idx = torch.tensor(batch_sel_idx)
-                if len(batch_sel_idx) == 0:
-                    continue
+        with MDSWriter(out=sub_data_root, columns=columns) as out:
+            inference_latencies = []
 
-            start_time = time.time()
+            for idx, batch in tqdm(enumerate(dataloader)):
+                batchidx = range(idx * 32, (idx + 1) * 32)
+                
+                if selective_json is not None:
+                    batch_sel_idx = [x - idx * 32 for x in batchidx if (x in selective_json)]
+                    batch_sel_idx = torch.tensor(batch_sel_idx)
+                    if len(batch_sel_idx) == 0:
+                        continue
 
-            processed_images, captions = batch["image"], batch["caption"]
-            # select 
-            processed_images = processed_images[batch_sel_idx]
-            captions = [captions[i] for i in batch_sel_idx]
-            
-            # VAE
-            processed_images = processed_images.to(device).half()
-            vae_outputs = vae_model.encode(processed_images).latent_dist.sample()
+                start_time = time.time()
 
-            vae_outputs = (vae_outputs.clip(-14, 14) / 28.0 + 0.5) * 255.0
-            vae_outputs = vae_outputs.to(torch.uint8)
+                processed_images, captions = batch["image"], batch["caption"]
+                # select 
+                processed_images = processed_images[batch_sel_idx]
+                captions = [captions[i] for i in batch_sel_idx]
+                
+                # VAE
+                processed_images = processed_images.to(device).half()
+                vae_outputs = vae_model.encode(processed_images).latent_dist.sample()
 
-            # T5
-            t5_inputs = t5tokenizer(captions, return_tensors="pt", padding=True, truncation=True, max_length=128)
-            t5_inputs = {k: v.to(device) for k, v in t5_inputs.items()}
-            t5_outputs = t5model.encoder(**t5_inputs)[0] # B, T, D
-            # mask that by 0 for padding tokens
-            mask = t5_inputs["attention_mask"].unsqueeze(-1).expand(t5_outputs.shape)
-            t5_outputs = t5_outputs * mask
+                vae_outputs = (vae_outputs.clip(-14, 14) / 28.0 + 0.5) * 255.0
+                vae_outputs = vae_outputs.to(torch.uint8)
 
-            # Iterate through the batch
-            for i in range(len(captions)):
-                sample = {
-                    "vae_output": vae_outputs[i].cpu().numpy().astype(np.uint8),
-                    "caption": str(captions[i]),
-                    't5emb': t5_outputs[i].cpu().numpy().astype(np.float16)
-                }
-                out.write(sample)
+                # T5
+                t5_inputs = t5tokenizer(captions, return_tensors="pt", padding=True, truncation=True, max_length=128)
+                t5_inputs = {k: v.to(device) for k, v in t5_inputs.items()}
+                t5_outputs = t5model.encoder(**t5_inputs)[0] # B, T, D
+                # mask that by 0 for padding tokens
+                mask = t5_inputs["attention_mask"].unsqueeze(-1).expand(t5_outputs.shape)
+                t5_outputs = t5_outputs * mask
 
-            inference_latencies.append(time.time() - start_time)
+                # Iterate through the batch
+                for i in range(len(captions)):
+                    sample = {
+                        "vae_output": vae_outputs[i].cpu().numpy().astype(np.uint8),
+                        "caption": str(captions[i]),
+                        't5emb': t5_outputs[i].cpu().numpy().astype(np.float16)
+                    }
+                    out.write(sample)
 
-            if is_test:
-                break
+                inference_latencies.append(time.time() - start_time)
 
-        logging.info(
-            f"Average Inference Latency on {device}: {np.mean(inference_latencies)} seconds"
-        )
+                if is_test:
+                    break
+
+            logging.info(
+                f"Average Inference Latency on {device}: {np.mean(inference_latencies)} seconds"
+            )
+            logging.info(
+                f"Total Inference Time on {device}: {time.time() - t0} seconds"
+            )
 
 
 def main(
-    datasetinfo,
-    out_root,
+    datasetinfos,
+    out_roots,
     is_test=False,
     device_name="cuda",
-    selective_json=None
+    selective_jsons=None
 ):
     device = torch.device(device_name if torch.cuda.is_available() else "cpu")
     print(f"Processing on {device}")
     convert_to_mds(
-        datasetinfo, out_root, device, is_test=is_test, selective_json = selective_json
+        datasetinfos, out_roots, device, is_test=is_test, selective_jsons = selective_jsons
     )
     logging.info("Finished processing images.")
 
@@ -209,14 +216,21 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    out_root = f"/home/host/simo/capfusion_mds/{str(args.file_index).zfill(5)}"
-    dataset_path = f"/home/host/simo/capfusion_256/{str(args.file_index).zfill(5)}.tar"
-    selective_json = f"/home/host/simo/sscd_deduped_pertar_items/{str(args.file_index).zfill(5)}.json"
-    
+    out_roots, datasetinfos, selective_jsons = [], [], []
+    for i in range(2000, 11357):
+        if i % 8 == args.file_index:
+            out_root = f"/home/host/simo/capfusion_mds/{str(i).zfill(5)}"
+            dataset_path = f"/home/host/simo/capfusion_256/{str(i).zfill(5)}.tar"
+            selective_json = f"/home/host/simo/sscd_deduped_pertar_items/{str(i).zfill(5)}.json"
+            out_roots.append(out_root)
+            datasetinfos.append(dataset_path)
+            selective_jsons.append(selective_json)
+            
+            
     main(
-        dataset_path,
-        out_root,
+        datasetinfos,
+        out_roots,
         is_test=args.is_test,
         device_name=args.device,
-        selective_json=selective_json
+        selective_jsons=selective_jsons
     )

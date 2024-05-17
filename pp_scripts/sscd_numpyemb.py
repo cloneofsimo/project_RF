@@ -78,63 +78,63 @@ def preprocess(x):
 
 @torch.no_grad()
 def convert_to_mds(
-    dataset_path, out_file, device, batch_size=8, num_workers=4, is_test=False
+    dataset_paths, out_files, device, is_test=False
 ):
     logging.info(f"Processing on {device}")
 
     model = torch.jit.load("sscd_disc_mixup.torchscript.pt").to(device)
-    # vae_model.encode = torch.compile(vae_model.encode, mode="reduce-overhead", fullgraph=False)
-    dataset = wds.WebDataset(dataset_path).decode("pil").to_tuple("jpg;png", "json")
+    for dataset_path, out_file in zip(dataset_paths, out_files):
 
-    # Create the dataset and dataloader
-    dataset = dataset.map(preprocess)
+        if dataset_path.startswith("s3"):
+            import boto3
+            import os
+            to_save_file = dataset_path.split("/")[-1]
+            temp_dir = f'../temp/{to_save_file}'
+            s3_removed = dataset_path.replace("s3://", "")
+            
+            s3 = boto3.client(
+                's3',
+                endpoint_url='https://fly.storage.tigris.dev',
+                region_name='auto',
+                aws_access_key_id=os.environ.get('AWS_ACCESS_KEY_ID'),
+                aws_secret_access_key=os.environ.get('AWS_SECRET_ACCESS_KEY')
+            )
+            s3.download_file('datacomp-1b', s3_removed, temp_dir)
+            dataset_path = temp_dir
 
-    # if dataset.__len__() < 1:
-    #     logging.info("No images to process.")
-    #     return
+                
+        dataset = wds.WebDataset(dataset_path).decode("pil").to_tuple("jpg;png", "json")
 
-    dataloader = DataLoader(dataset, batch_size=32, num_workers=4)
+        # Create the dataset and dataloader
+        dataset = dataset.map(preprocess)
 
-    total_embeddings = [] 
-   
-    inference_latencies = []
+        dataloader = DataLoader(dataset, batch_size=32, num_workers=4)
 
-    for batch in tqdm(dataloader):
-        start_time = time.time()
-
-        processed_images, captions = batch["image"], batch["caption"]
-        twoxtwo, fourxfour = batch["twoxtwo"], batch["fourxfour"]
-
-        embeddings = model(processed_images.to(device))
-        
-        total_embeddings.append(embeddings.cpu().numpy().astype(np.float16))
-        inference_latencies.append(time.time() - start_time)
-
-        if is_test:
-            break
-
-        logging.info(
-            f"Average Inference Latency on {device}: {np.mean(inference_latencies)} seconds"
-        )
-
-    total_embeddings = np.concatenate(total_embeddings, axis=0)
-    np.save(out_file, total_embeddings)
+        total_embeddings = [] 
     
+        inference_latencies = []
 
-def main(
-    datasetinfo,
-    out_file,
-    batch_size=64,
-    num_workers=8,
-    is_test=False,
-    device_name="cuda",
-):
-    device = torch.device(device_name if torch.cuda.is_available() else "cpu")
-    print(f"Processing on {device}")
-    convert_to_mds(
-        datasetinfo, out_file, device, batch_size, num_workers, is_test=is_test
-    )
-    logging.info("Finished processing images.")
+        for batch in tqdm(dataloader):
+            start_time = time.time()
+
+            processed_images, captions = batch["image"], batch["caption"]
+            twoxtwo, fourxfour = batch["twoxtwo"], batch["fourxfour"]
+
+            embeddings = model(processed_images.to(device))
+            
+            total_embeddings.append(embeddings.cpu().numpy().astype(np.float16))
+            inference_latencies.append(time.time() - start_time)
+
+            if is_test:
+                break
+
+            logging.info(
+                f"Average Inference Latency on {device}: {np.mean(inference_latencies)} seconds"
+            )
+
+        total_embeddings = np.concatenate(total_embeddings, axis=0)
+        np.save(out_file, total_embeddings)
+    
 
 
 import argparse
@@ -157,12 +157,11 @@ if __name__ == "__main__":
     root_dir = os.environ.get("ROOT_DIR", "../capfusion_256")
     args = parser.parse_args()
 
-    out_file = f"../sscdemb/{str(args.file_index).zfill(5)}.npy"
-    dataset_path = f"{root_dir}/{str(args.file_index).zfill(5)}.tar"
-    # out_file = "./here"
-    main(
-        dataset_path,
-        out_file,
-        is_test=args.is_test,
-        device_name=args.device,
-    )
+
+    out_files, dataset_paths = [], []
+    for idx in range(20000):
+        if idx % 8 == args.file_index:
+            out_files.append(f"../sscdemb/{str(idx).zfill(5)}.npy")
+            dataset_paths.append(f"{root_dir}/{str(idx).zfill(5)}.tar")    
+
+    convert_to_mds(dataset_paths, out_files, args.device, args.is_test)

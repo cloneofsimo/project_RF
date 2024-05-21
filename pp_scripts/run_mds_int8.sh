@@ -13,7 +13,7 @@
 #         wait
 #     fi
 # done
-
+export TOKENIZERS_PARALLELISM=false
 for ((i=0; i<=7; i++)); do
     CUDA_VISIBLE_DEVICES=$i python vae_t5_preprocessing.py --device cuda --file_index $i &
     if [ $((i % 8)) -eq 7 ]; then

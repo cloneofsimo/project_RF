@@ -199,6 +199,36 @@ def main(
 
 import argparse
 
+import os
+import json
+
+def detect_small_or_nonexistent_dirs(current_dir, start=0, end=14000, max_size=1024):
+    small_or_nonexistent_dirs = []
+
+    
+    for i in range(start, end + 1):
+        dir_name = f"{i:05d}"
+        dir_path = os.path.join(current_dir, dir_name)
+        
+        if not os.path.exists(dir_path):
+            small_or_nonexistent_dirs.append(i)
+        elif os.path.isdir(dir_path):
+            total_size = 0
+            for dirpath, dirnames, filenames in os.walk(dir_path):
+                for f in filenames:
+                    fp = os.path.join(dirpath, f)
+                    total_size += os.path.getsize(fp)
+            
+            if total_size < max_size:
+                small_or_nonexistent_dirs.append(i)
+    
+    return small_or_nonexistent_dirs
+
+def save_to_json(data, filename):
+    with open(filename, 'w') as f:
+        json.dump(data, f)
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Convert images to MDS format.")
     parser.add_argument(
@@ -215,13 +245,18 @@ if __name__ == "__main__":
     )
 
     args = parser.parse_args()
+    import json
+    # small_dirs = detect_small_or_nonexistent_dirs()
+    # save_to_json(small_dirs, 'small_or_nonexistent_dirs.json')
+
+    reqsids = json.load(open("/home/host/simo/capfusion_mds/small_or_nonexistent_dirs.json"))
 
     out_roots, datasetinfos, selective_jsons = [], [], []
-    for i in range(2000, 11357):
+    for i, reqid in enumerate(reqsids):
         if i % 8 == args.file_index:
-            out_root = f"/home/host/simo/capfusion_mds/{str(i).zfill(5)}"
-            dataset_path = f"/home/host/simo/capfusion_256/{str(i).zfill(5)}.tar"
-            selective_json = f"/home/host/simo/sscd_deduped_pertar_items/{str(i).zfill(5)}.json"
+            out_root = f"/home/host/simo/capfusion_mds/{str(int(reqid)).zfill(5)}"
+            dataset_path = f"/home/host/simo/capfusion_256/{str(int(reqid)).zfill(5)}.tar"
+            selective_json = f"/home/host/simo/sscd_deduped_pertar_items/{str(int(reqid)).zfill(5)}.json"
             out_roots.append(out_root)
             datasetinfos.append(dataset_path)
             selective_jsons.append(selective_json)

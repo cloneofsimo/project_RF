@@ -65,8 +65,8 @@ def merge_shard_groups(
         out.write(text)
 
 
-merge_shard_groups('/home/host/simo/sscd')
+#merge_shard_groups('/home/host/simo/sscd')
 # find . -type d -empty -delete
 
 
-merge_shard_groups('/home/host/simo/capfusion_vae_mds')
+merge_shard_groups('/home/host/simo/capfusion_mds')

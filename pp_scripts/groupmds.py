@@ -69,4 +69,4 @@ def merge_shard_groups(
 # find . -type d -empty -delete
 
 
-merge_shard_groups('/home/host/simo/capfusion_mds')
+merge_shard_groups('/home/host/simo/laionmds_t5xl')
